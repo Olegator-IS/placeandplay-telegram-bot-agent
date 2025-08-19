@@ -1,0 +1,30 @@
+services:
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: place-and-play-bot
+    restart: unless-stopped
+    env_file:
+      - ./config.env
+    networks:
+      - place-and-play-network
+    depends_on:
+      - place-and-play-api
+
+  place-and-play-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: place-and-play-api
+    restart: unless-stopped
+    env_file:
+      - ./config.env
+    ports:
+      - "8000:8000"
+    networks:
+      - place-and-play-network
+
+networks:
+  place-and-play-network:
+    driver: bridge
