@@ -618,6 +618,88 @@ class PlaceAndPlayBot:
         )
         await update.message.reply_text(msg, parse_mode='HTML')
 
+    async def login_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        chat_id = update.effective_chat.id
+        # Только приватный чат
+        if update.effective_chat.type != 'private':
+            await update.message.reply_text("Эта команда доступна только в личном чате с ботом.")
+            return
+        await update.message.reply_text("Введите email для авторизации:")
+        context.user_data['login_step'] = 'email'
+        return
+
+    async def login_conversation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = update.effective_chat.id
+        text = update.message.text.strip()
+        step = context.user_data.get('login_step')
+        if step == 'email':
+            context.user_data['login_email'] = text
+            context.user_data['login_step'] = 'password'
+            await update.message.reply_text("Введите пароль:")
+            return
+        elif step == 'password':
+            context.user_data['login_password'] = text
+            email = context.user_data['login_email']
+            password = context.user_data['login_password']
+            await update.message.reply_text("⏳ Авторизация...")
+            # 1. Авторизация
+            import requests
+            try:
+                login_url = f"{PLACE_AND_PLAY_API_BASE_URL}/bot/organizations/login"
+                login_payload = {"email": email, "password": password}
+                login_resp = requests.post(login_url, json=login_payload, timeout=15)
+                if login_resp.status_code != 200:
+                    await update.message.reply_text(f"❌ Ошибка авторизации: {login_resp.text}")
+                    context.user_data['login_step'] = None
+                    return
+                login_data = login_resp.json()
+                if login_data.get('status') != 200:
+                    await update.message.reply_text(f"❌ Ошибка авторизации: {login_data}")
+                    context.user_data['login_step'] = None
+                    return
+                access_token = login_data['accessToken']
+                refresh_token = login_data['refreshToken']
+                # 2. Получение orgId и названия
+                orginfo_url = f"{PLACE_AND_PLAY_API_BASE_URL}/bot/organizations/orgInfo"
+                orginfo_payload = {"accessToken": access_token, "refreshToken": refresh_token}
+                orginfo_resp = requests.post(orginfo_url, json=orginfo_payload, timeout=15)
+                if orginfo_resp.status_code != 200:
+                    await update.message.reply_text(f"❌ Ошибка получения информации об организации: {orginfo_resp.text}")
+                    context.user_data['login_step'] = None
+                    return
+                orginfo_data = orginfo_resp.json()
+                org = orginfo_data.get('organization')
+                if not org:
+                    await update.message.reply_text(f"❌ Организация не найдена: {orginfo_data}")
+                    context.user_data['login_step'] = None
+                    return
+                org_id = org['orgId']
+                org_name = org['attributes']['name']['en']
+                # 3. Привязка чата
+                chat_bind_url = f"{PLACE_AND_PLAY_API_BASE_URL}/bot/organizations/telegram-chat"
+                chat_bind_payload = {
+                    "orgId": org_id,
+                    "chatId": str(chat_id),
+                    "chatName": f"{org_name} bot notification"
+                }
+                chat_bind_resp = requests.post(chat_bind_url, json=chat_bind_payload, timeout=15)
+                if chat_bind_resp.status_code != 200:
+                    await update.message.reply_text(f"❌ Ошибка привязки чата: {chat_bind_resp.text}")
+                    context.user_data['login_step'] = None
+                    return
+                chat_bind_data = chat_bind_resp.json()
+                if chat_bind_data.get('isActive'):
+                    await update.message.reply_text(f"✅ Чат успешно привязан к организации <b>{org_name}</b>!\nТеперь уведомления будут приходить в этот чат.", parse_mode='HTML')
+                else:
+                    await update.message.reply_text(f"❌ Не удалось активировать чат: {chat_bind_data}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Внутренняя ошибка: {e}")
+            context.user_data['login_step'] = None
+            return
+        else:
+            return  # Игнорировать сообщения вне сценария
+
 def main():
     """Основная функция запуска бота"""
     logger.info("🚀 Запуск Place&Play Telegram Bot...")
@@ -635,6 +717,8 @@ def main():
     application.add_handler(CommandHandler("status", bot.status_command))
     application.add_handler(CommandHandler("share", bot.share_command))
     application.add_handler(CommandHandler("whoami", bot.whoami_command))
+    application.add_handler(CommandHandler("login", bot.login_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.login_conversation))
     application.add_handler(MessageHandler(filters.CONTACT, bot.handle_contact))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, lambda update, context: update.message.reply_text("❌ В этом боте можно использовать только команды. Для начала нажмите /start или /share.")))
     application.add_handler(CallbackQueryHandler(bot.handle_callback))
